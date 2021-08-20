@@ -1,0 +1,256 @@
+---
+title: "Torch in R"
+author: "Team Algoritma"
+date: "7/29/2021"
+output: html_document
+---
+
+# References:
+
+- dataset func: https://torch.mlverse.org/docs/articles/examples/dataset.html
+- split: https://stackoverflow.com/questions/36068963/r-how-to-split-a-data-frame-into-training-validation-and-test-sets
+
+# Load Data
+
+```{r}
+# install.packages("torch")
+library(torch)
+# error Rcpp: remove.packages("Rcpp") -> install.packages("Rcpp")
+
+MNISTDataset <- dataset(
+  name = "MNISTDataset",
+  
+  # init function
+  initialize = function(df) {
+    target_col <- 'label'
+    self$label_exist <- target_col %in% names(df)
+    
+    if (self$label_exist) {
+      X <- df[,-which(names(df) == target_col)]
+      y <- df[,target_col]
+      
+      # perlu tambahin satu soalnya di R ga bisa akses index 0
+      self$y <- torch_tensor(as.integer(y+1))
+    } else {
+      X <- df
+    }
+    
+    self$X <- torch_tensor(as.matrix(X), dtype=torch_float32())
+    
+    self$X <- self$X / 255
+  },
+  
+  .getitem = function(index) {
+    if (self$label_exist) {
+      list(X = self$X[index,], y = self$y[index])
+    } else {
+      list(X = self$X[index,])
+    }
+  },
+  
+  .length = function() {
+    self$X$size()[1]
+  }
+)
+```
+
+```{r}
+mnist <- read.csv("mnist/train.csv")
+```
+
+```{r}
+SPLIT_PROP <- 0.8
+BATCH_SIZE <- 16
+```
+
+```{r}
+# ga dibuat jadi objek dataset dulu soalnya ga ada random_split(), adanya torch_split() untuk ngesplit tensor
+spec <- c(train = SPLIT_PROP*SPLIT_PROP, val = SPLIT_PROP*(1-SPLIT_PROP), test = (1-SPLIT_PROP))
+
+g <- sample(cut(
+  seq(nrow(mnist)),
+  nrow(mnist)*cumsum(c(0,spec)),
+  labels = names(spec)
+))
+
+res <- split(mnist, g)
+
+print(nrow(res$train))
+print(nrow(res$val))
+print(nrow(res$test))
+```
+
+```{r}
+train_loader <- dataloader(
+  MNISTDataset(res$train),
+  batch_size = BATCH_SIZE,
+  shuffle = TRUE)
+
+val_loader <- dataloader(
+  MNISTDataset(res$val),
+  batch_size = BATCH_SIZE,
+  shuffle = TRUE)
+
+test_loader <- dataloader(
+  MNISTDataset(res$test),
+  batch_size = BATCH_SIZE,
+  shuffle = TRUE)
+
+print(length(train_loader))
+print(length(val_loader))
+print(length(test_loader))
+```
+
+# Visualize Data
+
+```{r}
+library(dplyr)
+library(ggplot2)
+mnist %>% 
+  select(label) %>% 
+  mutate(sample = g) %>% 
+  ggplot(aes(x=label, fill=sample)) +
+  geom_bar() +
+  facet_wrap(~sample, scales = "free_y") +
+  theme_minimal()
+```
+
+```{r}
+# viz image
+# image_montage(): https://anderfernandez.com/en/blog/how-to-create-neural-networks-with-torch-in-r/
+
+```
+
+
+# Define Model Architecture
+
+```{r}
+# ALTERNATIVE 2: Sequential, Keras style
+
+input_size <- 784
+hidden_sizes <- c(128, 64)
+output_size <- 10
+
+model <- nn_sequential(
+  # Layer 1
+  nn_linear(input_size, hidden_sizes[1]),
+  nn_relu(), 
+
+  # Layer 2
+  nn_linear(hidden_sizes[1], hidden_sizes[2]),
+  nn_relu(),
+
+  # Layer 3
+  nn_linear(hidden_sizes[2], output_size)
+)
+
+model
+```
+
+```{r}
+criterion <- nn_cross_entropy_loss()
+optimizer <- optim_adam(model$parameters, lr = 0.001)
+```
+
+```{r}
+evaluate_accuracy <- function(logits, y_true) {
+  y_pred <- logits$argmax(dim=2)
+  
+  correct_pred <- (y_pred == y_true)
+  acc <- correct_pred$sum()$item() / y_true$size()
+  
+  acc * 100
+}
+```
+
+
+```{r}
+# train + val loop: https://torch.mlverse.org/start/custom_dataset/
+# accuracy + save model: https://anderfernandez.com/en/blog/how-to-create-neural-networks-with-torch-in-r/
+
+n_epochs <- 2
+
+history <- list(
+  n_epochs = 1:n_epochs,
+  loss = list(train = c(),
+              val = c()),
+  acc = list(train = c(),
+              val = c())
+  )
+
+val_loss_min <- Inf
+
+for (epoch in 1:n_epochs) {
+  
+  # TRAINING DATA
+  model$train()
+  train_losses <- c()
+  train_acc <- c()
+  coro::loop(for (b in train_loader) {
+    
+    optimizer$zero_grad()
+    output <- model(b$X)
+    loss <- criterion(output, b$y)
+    loss$backward()
+    optimizer$step()
+    train_losses <- c(train_losses, loss$item())
+    
+    acc <- evaluate_accuracy(output, b$y)
+    train_acc <- c(train_acc, acc)
+  
+  })
+
+  # VALIDATION DATA
+  model$eval()
+  val_losses <- c()
+  val_acc <- c()
+  coro::loop(for (b in val_loader) {
+    
+    output <- model(b$X)
+    loss <- criterion(output, b$y)
+    val_losses <- c(val_losses, loss$item())
+    
+    acc <- evaluate_accuracy(output, b$y)
+    val_acc <- c(val_acc, acc)
+    
+  })
+  
+  # EVAL
+  avg_train_loss <- mean(train_losses)
+  avg_val_loss <- mean(val_losses)
+  avg_train_acc <- mean(train_acc)
+  avg_val_acc <- mean(val_acc)
+  
+  history[['loss']][['train']] <- c(history[['loss']][['train']], avg_train_loss)
+  history[['loss']][['val']] <- c(history[['loss']][['val']], avg_val_loss)
+  history[['acc']][['train']] <- c(history[['acc']][['train']], avg_train_acc)
+  history[['acc']][['val']] <- c(history[['acc']][['val']], avg_val_acc)
+
+  cat(sprintf("Epoch %d | Train Loss: %3.3f | Val Loss: %3.3f | Train Acc: %.2f | Val Acc: %.2f\n",
+              epoch, avg_train_loss, avg_val_loss, avg_train_acc, avg_val_acc))
+  
+  if (avg_val_loss <= val_loss_min) {
+    model_file_name <- "model.rt"
+
+    cat(sprintf("Validation loss decreased (%.5f --> %.5f)  Saving model to %s...\n",
+                val_loss_min, avg_val_loss, model_file_name))
+    torch_save(model, model_file_name)
+    val_loss_min <- avg_val_loss
+  }
+}
+```
+
+```{r}
+torch_save(model, "model.rt")
+saveRDS(history, "history.rds")
+```
+
+```{r}
+library(tidyr)
+data.frame(history) %>% 
+  pivot_longer(cols = -n_epochs) %>% 
+  separate(name, into = c("metric", "data"), sep = "\\.") %>% 
+  ggplot(aes(x = n_epochs, y = value, color = data)) +
+  geom_line() +
+  facet_wrap(~metric, scales = "free_y")
+```
