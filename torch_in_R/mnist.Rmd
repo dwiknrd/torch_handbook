@@ -61,10 +61,6 @@ A deep learning framework is a tool that allows us to build deep learning models
 |Keras provides static computation graphs | While PyTorch provides dynamic computation graphs|
 |Backend for Keras include:TensorFlow, Theano and Microsoft CNTK backend | While PyTorch has no backend implementation|
 
-# Data
-
-Let us start our neural network experience using `torch` in R by first preparing the dataset. You will use `Digit Recognizer (MNIST)` dataset which can be downloaded on [the following page](https://www.kaggle.com/c/digit-recognizer/data). Data to download are `train.csv` as train data and `test.csv` as test data. Both of the data store digit images measuring 28 x 28 pixels for 10 different categories.
-
 # Installation
 
 Please ensure you have installed `torch` package. You also can install the following package (`dplyr`, `ggplot2`, and `tidyr`) to run sample RMarkdown. Here is the short instruction on how to install `torch` package in R.
@@ -81,10 +77,10 @@ Please ensure you have installed `torch` package. You also can install the follo
 
 # Load Data
 
+## Working with Images
+
 ```{r}
-# install.packages("torch")
 library(torch)
-# error Rcpp: remove.packages("Rcpp") -> install.packages("Rcpp")
 
 MNISTDataset <- dataset(
   name = "MNISTDataset",
@@ -131,6 +127,8 @@ mnist <- read.csv("mnist/train.csv")
 SPLIT_PROP <- 0.8
 BATCH_SIZE <- 16
 ```
+
+## Training and Validation Datasets
 
 ```{r}
 # ga dibuat jadi objek dataset dulu soalnya ga ada random_split(), adanya torch_split() untuk ngesplit tensor
@@ -186,9 +184,9 @@ mnist %>%
 
 ```{r}
 # viz image
-vizTrain <- function(input){
+vizMNIST <- function(input){
   
-  dimmax <- sqrt(ncol(mnist_train[,-1]))
+  dimmax <- sqrt(ncol(input[,-1]))
   
   dimn <- ceiling(sqrt(nrow(input)))
   par(mfrow=c(dimn, dimn), mar=c(.1, .1, .1, .1))
@@ -198,8 +196,9 @@ vizTrain <- function(input){
       m1 <- apply(m1, 2, as.numeric)
       m1 <- t(apply(m1, 2, rev))
       
-      image(1:dimmax, 1:dimmax, m1, col=grey.colors(255), xaxt = 'n', yaxt = 'n')
-      text(2, 20, col="white", cex=1.2, mnist_train[i, 1])
+      image(1:dimmax, 1:dimmax, m1,
+            col=grey.colors(255), xaxt = 'n', yaxt = 'n')
+      text(2, 20, col="white", cex=1.2, input[i, 'label'])
   }
   
 }
@@ -212,7 +211,7 @@ mnist_train <- mnist %>%
   select(-sample)
 
 # visualize
-vizTrain(input = mnist_train[1:25,])
+vizMNIST(input = mnist_train[1:25,])
 ```
 
 # Define Model Architecture
@@ -245,6 +244,25 @@ criterion <- nn_cross_entropy_loss()
 optimizer <- optim_adam(model$parameters, lr = 0.001)
 ```
 
+# Train the Model
+
+Using `torch`, we have to manually loop the data per epoch to **train the model**. Here are the training loop for one epoch:
+
+1. Clear gradients of all optimized variables from `optimizer`
+2. Forward pass: compute predicted output by passing input data to the `model`
+3. Calculate the loss based on specified `criterion`
+4. Backward pass: compute gradient of the loss with respect to `model` parameters
+5. Perform parameter update using `optimizer` algorithm
+6. Accumulate training loss and accuracy
+
+Inside the training loop, we also **validate the model** by performing the following steps:
+
+1. Forward pass: compute predicted output by passing input data to the `model`
+2. Calculate the loss based on specified `criterion`
+3. Accumulate validation loss and accuracy
+
+But first let's us define `evaluate_accuracy` to calculate accuracy given the predicted `logits` and `y_true` actual label.
+
 ```{r}
 evaluate_accuracy <- function(logits, y_true) {
   y_pred <- logits$argmax(dim=2)
@@ -256,91 +274,137 @@ evaluate_accuracy <- function(logits, y_true) {
 }
 ```
 
+Define training loop with the following parameters:
+
+- `model`: untrained model
+- `train_loader`: data train of a `dataloader` object
+- `val_loader`: data validation of a `dataloader` object
+- `criterion`: loss function to be optimized
+- `optimizer`: optimization algorithm to used on the `model` parameters
+- `n_epochs`: number of training epochs
+- `model_file_name`: file name of serialized model. During the training loop, model with the lowest validation loss will be saved as a serialized model with `.rt` extension.
 
 ```{r}
-# train + val loop: https://torch.mlverse.org/start/custom_dataset/
-# accuracy + save model: https://anderfernandez.com/en/blog/how-to-create-neural-networks-with-torch-in-r/
-
-n_epochs <- 2
-
-history <- list(
-  n_epochs = 1:n_epochs,
-  loss = list(train = c(),
-              val = c()),
-  acc = list(train = c(),
-              val = c())
+train <- function(model, train_loader, val_loader, criterion, optimizer, n_epochs, model_file_name='model.rt'){
+  # initialize container variable for model performance results per epoch
+  history <- list(
+    n_epochs = 1:n_epochs,
+    loss = list(train = c(), val = c()),
+    acc = list(train = c(), val = c())
   )
-
-val_loss_min <- Inf
-
-for (epoch in 1:n_epochs) {
   
-  # TRAINING DATA
-  model$train()
-  train_losses <- c()
-  train_acc <- c()
-  coro::loop(for (b in train_loader) {
-    
-    optimizer$zero_grad()
-    output <- model(b$X)
-    loss <- criterion(output, b$y)
-    loss$backward()
-    optimizer$step()
-    train_losses <- c(train_losses, loss$item())
-    
-    acc <- evaluate_accuracy(output, b$y)
-    train_acc <- c(train_acc, acc)
+  # initialize tracker for minimum validation loss
+  val_loss_min <- Inf
   
-  })
-
-  # VALIDATION DATA
-  model$eval()
-  val_losses <- c()
-  val_acc <- c()
-  coro::loop(for (b in val_loader) {
+  # loop per epoch
+  for (epoch in 1:n_epochs) {
+    # initialize container for training performance
+    train_acc <- c()
+    train_losses <- c()
     
-    output <- model(b$X)
-    loss <- criterion(output, b$y)
-    val_losses <- c(val_losses, loss$item())
+    ###################
+    # train the model #
+    ###################
     
-    acc <- evaluate_accuracy(output, b$y)
-    val_acc <- c(val_acc, acc)
+    # prepare model for training
+    model$train()
     
-  })
+    # loop for each batch
+    coro::loop(for (b in train_loader) {
+      # STEP 1: clear gradients
+      optimizer$zero_grad()
+      # STEP 2: forward pass
+      output <- model(b$X)
+      # STEP 3: calculate the loss
+      loss <- criterion(output, b$y)
+      # STEP 4: backward pass
+      loss$backward()
+      # STEP 5: perform parameter update
+      optimizer$step()
+      # STEP 6: accumulate training loss and accuracy
+      train_losses <- c(train_losses, loss$item())
+      acc <- evaluate_accuracy(output, b$y)
+      train_acc <- c(train_acc, acc)
+    })
   
-  # EVAL
-  avg_train_loss <- mean(train_losses)
-  avg_val_loss <- mean(val_losses)
-  avg_train_acc <- mean(train_acc)
-  avg_val_acc <- mean(val_acc)
-  
-  history[['loss']][['train']] <- c(history[['loss']][['train']], avg_train_loss)
-  history[['loss']][['val']] <- c(history[['loss']][['val']], avg_val_loss)
-  history[['acc']][['train']] <- c(history[['acc']][['train']], avg_train_acc)
-  history[['acc']][['val']] <- c(history[['acc']][['val']], avg_val_acc)
-
-  cat(sprintf("Epoch %d | Train Loss: %3.3f | Val Loss: %3.3f | Train Acc: %.2f | Val Acc: %.2f\n",
-              epoch, avg_train_loss, avg_val_loss, avg_train_acc, avg_val_acc))
-  
-  if (avg_val_loss <= val_loss_min) {
-    model_file_name <- "model.rt"
-
-    cat(sprintf("Validation loss decreased (%.5f --> %.5f)  Saving model to %s...\n",
-                val_loss_min, avg_val_loss, model_file_name))
-    torch_save(model, model_file_name)
-    val_loss_min <- avg_val_loss
+    ######################
+    # validate the model #
+    ######################
+    
+    # initialize container for validation performance
+    val_acc <- c()
+    val_losses <- c()
+    
+    # prepare model for evaluation
+    model$eval()
+    
+    # loop for each batch
+    coro::loop(for (b in val_loader) {
+      # STEP 1: forward pass
+      output <- model(b$X)
+      # STEP 2: calculate the loss
+      loss <- criterion(output, b$y)
+      # STEP 3: accumulate validation loss and accuracy
+      val_losses <- c(val_losses, loss$item())
+      acc <- evaluate_accuracy(output, b$y)
+      val_acc <- c(val_acc, acc)
+    })
+    
+    ####################   
+    # model evaluation #
+    ####################
+    
+    # calculate average loss over an epoch
+    avg_train_loss <- mean(train_losses)
+    avg_val_loss <- mean(val_losses)
+    history[['loss']][['train']] <- c(history[['loss']][['train']], avg_train_loss)
+    history[['loss']][['val']] <- c(history[['loss']][['val']], avg_val_loss)
+    
+    # calculate average accuracy over an epoch
+    avg_train_acc <- mean(train_acc)
+    avg_val_acc <- mean(val_acc)
+    history[['acc']][['train']] <- c(history[['acc']][['train']], avg_train_acc)
+    history[['acc']][['val']] <- c(history[['acc']][['val']], avg_val_acc)
+    
+    # print training progress per epoch
+    cat(sprintf("Epoch %d | Train Loss: %3.3f | Val Loss: %3.3f | Train Acc: %.2f | Val Acc: %.2f\n",
+                epoch, avg_train_loss, avg_val_loss, avg_train_acc, avg_val_acc))
+    
+    # save model if validation loss has decreased
+    if (avg_val_loss <= val_loss_min) {
+      cat(sprintf("Validation loss decreased (%.5f --> %.5f)  Saving model to %s...\n",
+                  val_loss_min, avg_val_loss, model_file_name))
+      torch_save(model, model_file_name)
+      val_loss_min <- avg_val_loss
+    }
   }
+  
+  # return model performance history
+  return(history)
 }
 ```
 
 ```{r}
-torch_save(model, "model.rt")
-saveRDS(history, "history.rds")
+history <- train(
+  model, train_loader, val_loader,
+  criterion, optimizer,
+  n_epochs = 20)
 ```
 
 ```{r}
-# history <- readRDS("history.rds")
+# save history list as RDS file
+saveRDS(history, "history.rds")
+```
+
+Visualize the loss and accuracy from `history` to see the model performance for each epoch.
+
+```{r}
+# load previously saved history list
+history <- readRDS("history.rds")
+
 library(tidyr)
+
+# visualization
 data.frame(history) %>% 
   pivot_longer(cols = -n_epochs) %>% 
   separate(name, into = c("metric", "data"), sep = "\\.") %>% 
@@ -349,29 +413,53 @@ data.frame(history) %>%
   facet_wrap(~metric, scales = "free_y")
 ```
 
+From the visualization, we can deduct that the model is a good enough since the difference of model performance on training and validation is not too much different, and the accuracy is converging at 96-97%.
+
 # Test the Model
 
+In this section, we are going to test the model performance by using confusion matrix. Here are the steps:
+
+1. Forward pass: compute predicted output by passing input data to the **trained** `model`
+2. Get predicted label by retrieve index with the largest logit value per observation
+3. Append actual and predicted label to `y_test` and `y_pred` respectively
+
+Special notes: We must subtract the label with one to convert from index to class label, since R is a programming language with one-based indexing.
+
 ```{r}
+# load the best model
 model <- torch_load("model.rt")
-# model <- torch_load("model_softmax.rt")
-
-y_pred <- c()
-y_true <- c()
-
-for (b in enumerate(test_loader)) {
-  output <- model(b[[1]]$to())
-  labels <- b[[2]]$to() - 1 # supaya label menjadi 0-9
-  
-  # torch_max returns a list, with position 1 containing the values 
-  # and position 2 containing the respective indices
-  predicted <- torch_max(output$data(), dim = 2)[[2]] - 1 # supaya label menjadi 0-9
-  
-  for (i in 1:BATCH_SIZE){
-    y_pred <- c(y_pred, predicted[i]$item())
-    y_true <- c(y_true, labels[i]$item())
-  }
-}
 ```
+
+```{r}
+# initialize container
+y_true <- c()
+y_pred <- c()
+
+# prepare model for evaluation
+model$eval()
+
+# loop for each batch
+coro::loop(for (b in test_loader) {
+  # STEP 1: forward pass
+  output <- model(b$X)
+  # STEP 2: get predicted label
+  labels <- b$y - 1 # -1 = convert from index to class label
+  
+  # torch_max returns a list
+  # position 1 containing the values 
+  # position 2 containing the respective indices
+  predicted <- torch_max(output$data(), dim = 2)[[2]] - 1 # -1 = convert from index to class label
+  
+  # STEP 3: append actual and predicted label
+  for (i in 1:BATCH_SIZE){
+    y_true <- c(y_true, labels[i]$item())
+    y_pred <- c(y_pred, predicted[i]$item())
+  }
+})
+
+```
+
+Create a confusion matrix heatmap using `yardstick` and classification report by using `caret` to know the final model performance on test data.
 
 ```{r}
 library(yardstick)
@@ -383,79 +471,68 @@ data.frame(y_pred = factor(y_pred),
   scale_fill_distiller(palette = 7, direction = "reverse")
 ```
 
-
 ```{r}
 library(caret)
-confusionMatrix(as.factor(y_pred),as.factor(y_true))
+confusionMatrix(as.factor(y_pred), as.factor(y_true))
 ```
+
+Eventually, the model achieves ...% accuracy and other metrics reach >= ...% on unseen data.
 
 # Predict the Unlabeled Data
 
-```{r}
-mnist_data_unlabeled <- read.csv("mnist/test.csv")
-```
+In this last section, we use the trained model to predict the unlabeled data from `test.csv`, which only consists 784 columns of pixel without the actual label.
 
 ```{r}
+mnist_data_unlabeled <- read.csv("mnist/test.csv")
+
 unlabeled_loader <- dataloader(
   MNISTDataset(mnist_data_unlabeled),
-  batch_size = BATCH_SIZE,
-  shuffle = TRUE)
+  batch_size = 1)
 
 print(length(unlabeled_loader))
 ```
 
-```{r}
-# viz image
-vizUnlabled <- function(input){
-  
-  dimmax <- sqrt(ncol(mnist_data_unlabeled))
-  
-  dimn <- ceiling(sqrt(nrow(input)))
-  
-  par(mfrow=c(dimn, dimn), mar=c(.1, .1, .1, .1))
-  
-  for (i in 1:nrow(input)){
-      m1 <- matrix(input[i,1:ncol(input)], nrow=dimmax, byrow=T)
-      m1 <- apply(m1, 2, as.numeric)
-      m1 <- t(apply(m1, 2, rev))
-      
-      image(1:dimmax, 1:dimmax, m1, col=grey.colors(255), xaxt = 'n', yaxt = 'n')
-  }
-  
-}
-```
+Each image is feeded into the model with `batch_size = 1` and get the predicted labels for the first 20 images.
 
 ```{r}
+# initialize container for predicted labels
 y_pred_unlabeled <- c()
 
-for (b in enumerate(unlabeled_loader)) {
-  output <- model(b[[1]]$to())
+# loop for each data
+for (i in 1:20) {
+  # forward pass
+  output <- model(unlabeled_loader$dataset$X[i,])
   
-  # torch_max returns a list, with position 1 containing the values 
-  # and position 2 containing the respective indices
-  predicted <- torch_max(output$data(), dim = 2)[[2]] - 1 # supaya label menjadi 0-9
+  # torch_max returns a list
+  # position 1 containing the values 
+  # position 2 containing the respective indices
+  predicted <- torch_max(output$data(), dim = 2)[[2]] - 1 # -1 = convert from index to class label
   
-  for (i in 1:BATCH_SIZE){
-    y_pred_unlabeled <- c(y_pred_unlabeled, predicted[i]$item())
-  }
+  # prob <- nnf_softmax(output$data(), dim = 1)
+  
+  # append predicted label
+  y_pred_unlabeled <- c(y_pred_unlabeled, predicted$item())
 }
 ```
 
-```{r}
-# visualize
-vizUnlabled(input = mnist_data_unlabeled[1:12,])
-```
+The visualization below tells us the predicted label given an image.
 
 ```{r}
-data.frame(y_pred_unlabeled = y_pred_unlabeled) %>% 
-  head(12)
+mnist_data_unlabeled[1:length(y_pred_unlabeled),] %>% 
+  mutate(label = y_pred_unlabeled) %>% 
+  vizMNIST()
 ```
-# References:
 
-- dataset func: https://torch.mlverse.org/docs/articles/examples/dataset.html
-- split: https://stackoverflow.com/questions/36068963/r-how-to-split-a-data-frame-into-training-validation-and-test-sets
+As we can see, majority of the images are classified correctly except for certain cases, such as:
+
+- First row fourth column = actual digit is 0 but classified as 9
+- Second row first column = actual digit is 7 but classified as 9 
+
+# References
+
 - [Wikipedia](https://en.wikipedia.org/wiki/Deep_learning)
 - [Deep Learning](https://www.ibm.com/cloud/learn/deep-learning)
 - [Keras vs PyTorch](https://www.geeksforgeeks.org/keras-vs-pytorch/)
 - [Torch for R](https://medium.com/pytorch/please-allow-me-to-introduce-myself-torch-for-r-9ea0f361ea7e)
-
+- [Function `Dataset()`](https://torch.mlverse.org/docs/articles/examples/dataset.html)
+- [Custom Dataset](https://torch.mlverse.org/start/custom_dataset/)
