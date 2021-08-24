@@ -54,7 +54,7 @@ A deep learning framework is a tool that allows us to build deep learning models
 |Keras was released in March 2015| While PyTorch was released in October 2016|
 |Keras has a high level API| While PyTorch has a low level API|
 |Keras is comparatively slower in speed | While PyTorch has a higher speed than Keras, suitable for high performance|
-|Keras has a simple architecture,making it more readable and easy to use | While PyTorch has very low readablility due to a complex architecture|
+|Keras has a simple architecture, making it more readable and easy to use | While PyTorch has very low readablility due to a complex architecture|
 |Keras has a smaller community support | While PyTorch has a stronger community support|
 |Keras is mostly used for small datasets due to its slow speed | While PyTorch is preferred for large datasets and high performance|
 |Debugging in Keras is difficult due to presence of computational junk | While debugging in PyTorch is easier and faster|
@@ -355,29 +355,38 @@ data.frame(history) %>%
 model <- torch_load("model.rt")
 # model <- torch_load("model_softmax.rt")
 
-test_losses <- c()
-total <- 0
-correct <- 0
+y_pred <- c()
+y_true <- c()
 
 for (b in enumerate(test_loader)) {
   output <- model(b[[1]]$to())
-  labels <- b[[2]]$to()
-  loss <- nnf_cross_entropy(output, labels)
-  test_losses <- c(test_losses, loss$item())
+  labels <- b[[2]]$to() - 1 # supaya label menjadi 0-9
+  
   # torch_max returns a list, with position 1 containing the values 
   # and position 2 containing the respective indices
-  predicted <- torch_max(output$data(), dim = 2)[[2]]
-  total <- total + labels$size(1)
-  # add number of correct classifications in this batch to the aggregate
-  correct <- correct + (predicted == labels)$sum()$item()
+  predicted <- torch_max(output$data(), dim = 2)[[2]] - 1 # supaya label menjadi 0-9
+  
+  for (i in 1:BATCH_SIZE){
+    y_pred <- c(y_pred, predicted[i]$item())
+    y_true <- c(y_true, labels[i]$item())
+  }
 }
-
-mean(test_losses)
 ```
 
 ```{r}
-test_accuracy <-  correct/total
-test_accuracy
+library(yardstick)
+
+data.frame(y_pred = factor(y_pred),
+           y_true = factor(y_true)) %>%
+  conf_mat(y_pred, y_true) %>% 
+  autoplot(type = "heatmap") + 
+  scale_fill_distiller(palette = 7, direction = "reverse")
+```
+
+
+```{r}
+library(caret)
+confusionMatrix(as.factor(y_pred),as.factor(y_true))
 ```
 
 # Predict the Unlabeled Data
@@ -417,23 +426,30 @@ vizUnlabled <- function(input){
 ```
 
 ```{r}
-# visualize
-vizUnlabled(input = mnist_data_unlabeled[1:25,])
-```
-
-```{r}
-predicted <- assign("list", NULL, envir = .GlobalEnv)
+y_pred_unlabeled <- c()
 
 for (b in enumerate(unlabeled_loader)) {
   output <- model(b[[1]]$to())
-  predicted <- torch_max(output$data(), dim = 2)[[2]]
+  
+  # torch_max returns a list, with position 1 containing the values 
+  # and position 2 containing the respective indices
+  predicted <- torch_max(output$data(), dim = 2)[[2]] - 1 # supaya label menjadi 0-9
+  
+  for (i in 1:BATCH_SIZE){
+    y_pred_unlabeled <- c(y_pred_unlabeled, predicted[i]$item())
+  }
 }
 ```
 
 ```{r}
-predicted %>% as_array()
+# visualize
+vizUnlabled(input = mnist_data_unlabeled[1:12,])
 ```
 
+```{r}
+data.frame(y_pred_unlabeled = y_pred_unlabeled) %>% 
+  head(12)
+```
 # References:
 
 - dataset func: https://torch.mlverse.org/docs/articles/examples/dataset.html
