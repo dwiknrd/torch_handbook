@@ -79,6 +79,13 @@ Please ensure you have installed `torch` package. You also can install the follo
 
 ## Working with Images
 
+Let's start implement our existing knowledge of neural network using `torch` in **R** to solve an **image classification** problem. We'll use famous [**MNIST Handwritten Digits Data**](https://www.kaggle.com/c/digit-recognizer/data) as our training dataset. It consists of 28 by 28 pixels grayscale images of handwritten digits (0 to 9) and labels for each image indicating which digit it represents. There are two files of data to be downloaded: `train.csv` is pixel data with actual digit label, whereas `test.csv` is pixel data **without** the actual digit label. Here are some sample image from dataset: ![mnist](https://i.imgur.com/CAYnuo1.jpeg)
+
+It's evident that these images are relatively small in size, and recognizing the digits can sometimes be challenging even for the human eye. While it's useful to look at these images, there's just one problem here: Torch doesn't know how to work with images. We need to convert the images into tensors. We can do this by specifying a transform while creating our dataset.
+
+Torch Dataset allow us to specify one or more transformation functions that are applied to the images as they are loaded. We'll use the `torch.tensor()` to convert the pixel values into tensors.
+
+
 ```{r}
 library(torch)
 
@@ -130,6 +137,16 @@ BATCH_SIZE <- 16
 
 ## Training and Validation Datasets
 
+While building real-world machine learning models, it is quite common to split the dataset into three parts:
+
+- **Training set** - used to train the model, i.e., compute the loss and adjust the model's weights using gradient descent.
+- **Validation set** - used to evaluate the model during training, adjust hyperparameters (learning rate, etc.), and pick the best version of the model.
+- **Test set** - used to compare different models or approaches and report the model's final accuracy.
+
+In the MNIST dataset, there are 42,000 images in `train.csv` and 784 images in `test.csv`. The test set is standardized so that different researchers can report their models' results against the same collection of images.
+
+Since there's no predefined validation set, we must manually split the 42,000 images into training, validation, and test datasets. Let's set aside 42,000 randomly chosen images for validation.
+
 ```{r}
 # ga dibuat jadi objek dataset dulu soalnya ga ada random_split(), adanya torch_split() untuk ngesplit tensor
 spec <- c(train = SPLIT_PROP*SPLIT_PROP, val = SPLIT_PROP*(1-SPLIT_PROP), test = (1-SPLIT_PROP))
@@ -168,7 +185,13 @@ print(length(val_loader))
 print(length(test_loader))
 ```
 
+It's essential to choose a random sample for creating a validation and test set. Training data is often sorted by the target labels, i.e., images of 0s, followed by 1s, followed by 2s, etc. If we create a validation set using the last 20% of images, it would only consist of 8s and 9s. In contrast, the training set would contain no 8s or 9s. Such a training-validation would make it impossible to train a useful model.
+
+We can now create `DataLoader` to help us load the data in batches. We'll use a batch size of 16. We set **`shuffle = TRUE`** for the data loader to ensure that the batches generated in each epoch are different. This randomization helps generalize & speed up the training process.
+
 # Visualize Data
+
+Let's check the proportion of each class labels, since it is important to ensure that the model can learn each digit in a balanced and fair manner. We check the distribution of digits in training, validation, and also test set.
 
 ```{r}
 library(dplyr)
@@ -204,6 +227,8 @@ vizMNIST <- function(input){
 }
 ```
 
+The distribution of our class labels do seem to be spread out quite evenly, so there's no problem. Next, we visualize a couple of images from `train`:
+
 ```{r}
 mnist_train <- mnist %>% 
   mutate(sample = g) %>% 
@@ -215,6 +240,12 @@ vizMNIST(input = mnist_train[1:25,])
 ```
 
 # Define Model Architecture
+
+We'll create a neural network with three layers: two hidden and one output layer. Additionally, we'll use `nn_relu` activation function between each layer. Let's create a **`nn_sequential()`** object, which consists of linear fully-connected layer:
+
+- The input size is 784 nodes as the MNIST dataset consists of 28 by 28 pixels
+- The hidden sizes are 128 and 64 respectively, this number can be increased or decreased to change the learning capacity of the model
+- The output size is 10 as the MNIST dataset has 10 target classes (0 to 9)
 
 ```{r}
 # ALTERNATIVE 2: Sequential, Keras style
@@ -238,6 +269,20 @@ model <- nn_sequential(
 
 model
 ```
+
+A little bit about the mathematical detail: The image vector of size 784 are transformed into intermediate output vector of length 128 then 64 by performing a matrix multiplication of inputs matrix. Thus, input and layer1 outputs have linear relationship, i.e., each element of layer outputs is a weighted sum of elements from inputs. Thus, even as we train the model and modify the weights, layer1 can only capture linear relationships between inputs and outputs.
+
+![layers](https://i.imgur.com/inXsLuq.png)
+
+
+Activation function such as **Rectified Linear Unit (ReLU)** is used to introduce non-linearity to the model. It has the formula `relu(x) = max(0,x)` i.e. it simply replaces negative values in a given tensor with the value 0. We refer to ReLU as the activation function, because for each input certain outputs are activated (those with non-zero values) while others turned off (those with zero values). ReLU can be seen visually as follows:
+
+![relu](https://i.imgur.com/yijV4xF.png)
+
+
+The output layer returns a batch of vectors of size 10. This predicted output is then being compared with actual label, quantified by using **`nn_cross_entropy_loss()`**. It combines `LogSoftmax` and `NLLLoss` (Negative Log Likelihood Loss) in one single class.
+
+The loss value is used to update the parameter weights in the model. The parameter update algorithm can be implemented via an optimizer. In this case, we are using **`optim_adam()`** with learning rate (`lr=0.001`).
 
 ```{r}
 criterion <- nn_cross_entropy_loss()
@@ -384,14 +429,14 @@ train <- function(model, train_loader, val_loader, criterion, optimizer, n_epoch
 }
 ```
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 history <- train(
   model, train_loader, val_loader,
   criterion, optimizer,
   n_epochs = 20)
 ```
 
-```{r}
+```{r eval=FALSE, include=FALSE}
 # save history list as RDS file
 saveRDS(history, "history.rds")
 ```
@@ -476,7 +521,7 @@ library(caret)
 confusionMatrix(as.factor(y_pred), as.factor(y_true))
 ```
 
-Eventually, the model achieves ...% accuracy and other metrics reach >= ...% on unseen data.
+> Eventually, the model achieves 96.51% accuracy and other metrics reach >= 90% on unseen data.
 
 # Predict the Unlabeled Data
 
@@ -506,7 +551,7 @@ for (i in 1:20) {
   # torch_max returns a list
   # position 1 containing the values 
   # position 2 containing the respective indices
-  predicted <- torch_max(output$data(), dim = 2)[[2]] - 1 # -1 = convert from index to class label
+  predicted <- torch_max(output$data(), dim = 1)[[2]] - 1 # -1 = convert from index to class label
   
   # prob <- nnf_softmax(output$data(), dim = 1)
   
@@ -514,6 +559,7 @@ for (i in 1:20) {
   y_pred_unlabeled <- c(y_pred_unlabeled, predicted$item())
 }
 ```
+
 
 The visualization below tells us the predicted label given an image.
 
@@ -536,3 +582,24 @@ As we can see, majority of the images are classified correctly except for certai
 - [Torch for R](https://medium.com/pytorch/please-allow-me-to-introduce-myself-torch-for-r-9ea0f361ea7e)
 - [Function `Dataset()`](https://torch.mlverse.org/docs/articles/examples/dataset.html)
 - [Custom Dataset](https://torch.mlverse.org/start/custom_dataset/)
+
+# Further Reading
+
+There's a lot of scope to experiment here, here are a few ideas:
+
+* Try changing the size of the hidden layer, or add more hidden layers and see if you can achieve a higher accuracy.
+
+* Try changing the batch size and learning rate to see if you can achieve the same accuracy in fewer epochs.
+
+* Compare the training times on a CPU vs. GPU. Do you see a significant difference. How does it vary with the size of the dataset and the size of the model (no. of weights and parameters)?
+
+* Try building a model for a different dataset, such as the [CIFAR10 or CIFAR100 datasets](https://www.cs.toronto.edu/~kriz/cifar.html).
+
+
+Here are some references for further reading:
+
+* [A visual proof that neural networks can compute any function](http://neuralnetworksanddeeplearning.com/chap4.html), also known as the Universal Approximation Theorem.
+
+* [But what *is* a neural network?](https://www.youtube.com/watch?v=aircAruvnKk) - A visual and intuitive introduction to what neural networks are and what the intermediate layers represent
+
+* [Stanford CS229 Lecture notes on Backpropagation](http://cs229.stanford.edu/notes/cs229-notes-backprop.pdf) - for a more mathematical treatment of how gradients are calculated and weights are updated for neural networks with multiple layers.
