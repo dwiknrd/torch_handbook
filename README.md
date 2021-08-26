@@ -116,8 +116,8 @@ It's evident that these images are relatively small in size, and recognizing the
 
 This article contains an explanation of how to identify digits from a dataset of handwritten images using deep learning. Deep learning algorithm was developed within torch framework and implemented at Python and R. 
 
-- [**Torch Handbook in Python**](https://github.com/dwiknrd/torch_handbook/tree/main/torch_in_Python)
-- [**Torch Handbook in R**](https://github.com/dwiknrd/torch_handbook/tree/main/torch_in_R)
+- [**Torch Handbook in Python**](https://torch-handbook-python.netlify.app/)
+- [**Torch Handbook in R**](https://torch-handbook-r.netlify.app/)
 
 <hr>
 
